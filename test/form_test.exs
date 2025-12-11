@@ -2849,7 +2849,8 @@ defmodule AshPhoenix.FormTest do
         |> Ash.Changeset.for_create(:create, %{
           original_price: 100,
           discount_price: 10,
-          final_price: 90
+          final_price: 90,
+          line_items: []
         })
         |> Ash.create!()
 
@@ -2871,6 +2872,59 @@ defmodule AshPhoenix.FormTest do
 
       # Should show correct data value (90) instead of stale param value (99)
       assert Form.value(form, :final_price) == 90
+    end
+
+    test "nested path syntax for prioritize_data_for" do
+      # Scenario: User changes values, triggering computed field calculations,
+      # then reverts back, leaving stale param values in the browser
+
+      estimate =
+        PricingEstimate
+        |> Ash.Changeset.for_create(:create, %{
+          original_price: 100,
+          discount_price: 10,
+          final_price: 90,
+          line_items: [
+            %{quantity: 2, unit_price: 50, subtotal: 100}
+          ]
+        })
+        |> Ash.create!()
+
+      # Simulate the scenario:
+      # 1. User changes discount_price from 10 to 5 (final_price becomes 95)
+      # 2. User changes quantity from 2 to 3 (subtotal becomes 150)
+      # 3. User reverts both changes back to original values
+      # 4. Browser still has stale params: final_price=95, subtotal=150
+      # 5. prioritize_data_for should show correct data values instead
+
+      form =
+        estimate
+        |> Form.for_update(:update,
+          domain: Domain,
+          prioritize_data_for: [
+            :final_price,
+            line_items: [:subtotal]
+          ]
+        )
+        |> Form.validate(%{
+          "original_price" => "100",
+          "discount_price" => "10",
+          "final_price" => "90",
+          "line_items" => [
+            %{
+              "quantity" => "2",
+              "unit_price" => "50",
+              "subtotal" => "150"     # Stale value from when quantity was 3
+            }
+          ]
+        })
+
+      # Verify nested form has correct prioritize_data_for extracted
+      line_item_forms = Form.value(form, :line_items)
+      [line_item_form | _] = line_item_forms
+
+      # subtotal: With prioritize_data_for, should show data value (100) not stale param (150)
+      assert Form.value(line_item_form, :subtotal) == 100
     end
   end
 end
