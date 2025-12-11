@@ -13,6 +13,7 @@ defmodule AshPhoenix.Test.Domain do
   resources do
     resource(AshPhoenix.Test.Artist)
     resource(AshPhoenix.Test.Author)
+    resource(AshPhoenix.Test.PricingEstimate)
 
     resource AshPhoenix.Test.Comment do
       define :create_with_custom_input do
