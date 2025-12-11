@@ -370,12 +370,16 @@ defmodule AshPhoenix.Form do
       """
     ],
     prioritize_data_for: [
-      type: {:list, :atom},
+      type: :any,
       default: [],
       doc: """
       Fields to check data before params when attribute is not in the changeset.
 
       Useful for computed attributes that revert to original values, preventing stale param values from being displayed.
+
+      Supports nested paths for forms:
+
+          prioritize_data_for: [:field1, nested_form: [:nested_field]]
       """
     ]
   ]
@@ -1647,6 +1651,8 @@ defmodule AshPhoenix.Form do
                             prev_data_trail: prev_data_trail,
                             transform_errors: form.transform_errors,
                             post_process_errors: form.post_process_errors,
+                            prioritize_data_for:
+                              extract_nested_prioritize_data_for(form.prioritize_data_for, key),
                             as: form.name <> "[#{key}][#{index}]",
                             id: form.id <> "_#{key}_#{index}"
                           )
@@ -1675,6 +1681,8 @@ defmodule AshPhoenix.Form do
                             prev_data_trail: prev_data_trail,
                             transform_errors: form.transform_errors,
                             post_process_errors: form.post_process_errors,
+                            prioritize_data_for:
+                              extract_nested_prioritize_data_for(form.prioritize_data_for, key),
                             as: form.name <> "[#{key}][#{index}]",
                             id: form.id <> "_#{key}_#{index}"
                           )
@@ -1693,7 +1701,9 @@ defmodule AshPhoenix.Form do
                         matcher: matcher,
                         accessing_from: opts[:managed_relationship],
                         prepare_source: opts[:prepare_source],
-                        prev_data_trail?: prev_data_trail
+                        prev_data_trail?: prev_data_trail,
+                        prioritize_data_for:
+                          extract_nested_prioritize_data_for(form.prioritize_data_for, key)
                       )
                       |> Map.put(:name, form.name <> "[#{key}][#{index}]")
                       |> Map.put(:id, form.id <> "_#{key}_#{index}")
@@ -1735,7 +1745,9 @@ defmodule AshPhoenix.Form do
                       matcher: matcher,
                       transform_params: opts[:transform_params],
                       accessing_from: opts[:managed_relationship],
-                      prepare_source: opts[:prepare_source]
+                      prepare_source: opts[:prepare_source],
+                      prioritize_data_for:
+                        extract_nested_prioritize_data_for(form.prioritize_data_for, key)
                     )
 
                   Map.put(forms, key, new_form)
@@ -1770,6 +1782,8 @@ defmodule AshPhoenix.Form do
                       prev_data_trail: prev_data_trail,
                       transform_errors: form.transform_errors,
                       post_process_errors: form.post_process_errors,
+                      prioritize_data_for:
+                        extract_nested_prioritize_data_for(form.prioritize_data_for, key),
                       as: form.name <> "[#{key}]",
                       id: form.id <> "_#{key}"
                     )
@@ -3294,7 +3308,7 @@ defmodule AshPhoenix.Form do
   end
 
   defp get_param_or_data(changeset, form, field) do
-    if field in form.prioritize_data_for do
+    if prioritize_data_for_field?(form, field) do
       # Prioritized order: data -> casted -> params
       case get_data_value(changeset.data, field) do
         :error ->
@@ -3322,7 +3336,7 @@ defmodule AshPhoenix.Form do
   end
 
   defp get_query_param_or_data(query, data, form, field) do
-    if form.prioritize_data_for && field in form.prioritize_data_for do
+    if prioritize_data_for_field?(form, field) do
       case Map.fetch(data || %{}, field) do
         :error -> Map.fetch(query.params, to_string(field))
         result -> result
@@ -3336,7 +3350,7 @@ defmodule AshPhoenix.Form do
   end
 
   defp get_action_input_param_or_data(action_input, data, form, field) do
-    if form.prioritize_data_for && field in form.prioritize_data_for do
+    if prioritize_data_for_field?(form, field) do
       case Map.fetch(data || %{}, field) do
         :error -> Map.fetch(action_input.params, to_string(field))
         result -> result
@@ -6494,5 +6508,40 @@ defmodule AshPhoenix.Form do
       :prepare_source,
       :warn_on_unhandled_errors?
     ])
+  end
+
+  # Normalize prioritize_data_for to extract top-level field names
+  # Examples:
+  #   [:field1, :field2] -> [:field1, :field2]
+  #   [:field1, nested_form: [:nested_field]] -> [:field1, :nested_form]
+  defp normalize_prioritize_data_for(config) when is_list(config) do
+    Enum.flat_map(config, fn
+      atom when is_atom(atom) -> [atom]
+      {key, _value} when is_atom(key) -> [key]
+      _ -> []
+    end)
+  end
+
+  defp normalize_prioritize_data_for(_), do: []
+
+  # Extract nested prioritize_data_for config for a specific nested form key
+  # Examples:
+  #   [:field1, nested_form: [:nested_field]], :nested_form -> [:nested_field]
+  #   [:field1, :field2], :nested_form -> []
+  defp extract_nested_prioritize_data_for(parent_config, nested_key)
+       when is_list(parent_config) do
+    parent_config
+    |> Enum.find_value(fn
+      {^nested_key, value} when is_list(value) -> value
+      _ -> nil
+    end) || []
+  end
+
+  defp extract_nested_prioritize_data_for(_, _), do: []
+
+  # Check if a field should prioritize data over params
+  defp prioritize_data_for_field?(form, field) do
+    normalized = normalize_prioritize_data_for(form.prioritize_data_for)
+    field in normalized
   end
 end
