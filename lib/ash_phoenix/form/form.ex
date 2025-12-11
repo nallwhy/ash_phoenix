@@ -175,6 +175,7 @@ defmodule AshPhoenix.Form do
     :id,
     :transform_errors,
     :post_process_errors,
+    :prioritize_data_for,
     :original_data,
     :transform_params,
     :prepare_params,
@@ -366,6 +367,15 @@ defmodule AshPhoenix.Form do
       default: %{},
       doc: """
       The initial parameters to use for the form. This is useful for setting up a form with default values.
+      """
+    ],
+    prioritize_data_for: [
+      type: {:list, :atom},
+      default: [],
+      doc: """
+      Fields to check data before params when attribute is not in the changeset.
+
+      Useful for computed attributes that revert to original values, preventing stale param values from being displayed.
       """
     ]
   ]
@@ -632,6 +642,7 @@ defmodule AshPhoenix.Form do
       errors: opts[:errors],
       transform_errors: opts[:transform_errors],
       post_process_errors: opts[:post_process_errors],
+      prioritize_data_for: opts[:prioritize_data_for] || [],
       warn_on_unhandled_errors?: opts[:warn_on_unhandled_errors?],
       name: name,
       forms: forms,
@@ -730,6 +741,7 @@ defmodule AshPhoenix.Form do
       errors: opts[:errors],
       transform_errors: opts[:transform_errors],
       post_process_errors: opts[:post_process_errors],
+      prioritize_data_for: opts[:prioritize_data_for] || [],
       warn_on_unhandled_errors?: opts[:warn_on_unhandled_errors?],
       name: name,
       forms: forms,
@@ -829,6 +841,7 @@ defmodule AshPhoenix.Form do
       errors: opts[:errors],
       transform_errors: opts[:transform_errors],
       post_process_errors: opts[:post_process_errors],
+      prioritize_data_for: opts[:prioritize_data_for] || [],
       warn_on_unhandled_errors?: opts[:warn_on_unhandled_errors?],
       forms: forms,
       form_keys: Keyword.new(List.wrap(opts[:forms])),
@@ -967,6 +980,7 @@ defmodule AshPhoenix.Form do
       errors: opts[:errors],
       transform_errors: opts[:transform_errors],
       post_process_errors: opts[:post_process_errors],
+      prioritize_data_for: opts[:prioritize_data_for] || [],
       warn_on_unhandled_errors?: opts[:warn_on_unhandled_errors?],
       original_data: data,
       forms: forms,
@@ -1283,6 +1297,7 @@ defmodule AshPhoenix.Form do
         prepare_params: opts[:prepare_params] || form.opts[:prepare_params],
         prepare_source: opts[:prepare_source] || form.opts[:prepare_source],
         transform_errors: opts[:transform_errors] || form.opts[:transform_errors],
+        prioritize_data_for: opts[:prioritize_data_for] || form.opts[:prioritize_data_for] || [],
         warn_on_unhandled_errors?:
           opts[:warn_on_unhandled_errors] || form.opts[:warn_on_unhandled_errors?]
     }
@@ -3278,14 +3293,68 @@ defmodule AshPhoenix.Form do
     do_value(form, field)
   end
 
+  defp get_param_or_data(changeset, form, field) do
+    if field in form.prioritize_data_for do
+      # Prioritized order: data -> casted -> params
+      case get_data_value(changeset.data, field) do
+        :error ->
+          case get_casted_value(changeset, field) do
+            :error -> get_non_attribute_non_argument_param(changeset, form, field)
+            result -> result
+          end
+
+        result ->
+          result
+      end
+    else
+      # Standard order: casted -> params -> data
+      case get_casted_value(changeset, field) do
+        :error ->
+          case get_non_attribute_non_argument_param(changeset, form, field) do
+            :error -> get_data_value(changeset.data, field)
+            result -> result
+          end
+
+        result ->
+          result
+      end
+    end
+  end
+
+  defp get_query_param_or_data(query, data, form, field) do
+    if form.prioritize_data_for && field in form.prioritize_data_for do
+      case Map.fetch(data || %{}, field) do
+        :error -> Map.fetch(query.params, to_string(field))
+        result -> result
+      end
+    else
+      case Map.fetch(query.params, to_string(field)) do
+        :error -> Map.fetch(data || %{}, field)
+        result -> result
+      end
+    end
+  end
+
+  defp get_action_input_param_or_data(action_input, data, form, field) do
+    if form.prioritize_data_for && field in form.prioritize_data_for do
+      case Map.fetch(data || %{}, field) do
+        :error -> Map.fetch(action_input.params, to_string(field))
+        result -> result
+      end
+    else
+      case Map.fetch(action_input.params, to_string(field)) do
+        :error -> Map.fetch(data || %{}, field)
+        result -> result
+      end
+    end
+  end
+
   defp do_value(%{source: %Ash.Changeset{} = changeset} = form, field) do
     with :error <- get_nested(form, field),
          :error <- Ash.Changeset.fetch_argument(changeset, field),
          :error <- get_invalid_value(changeset, field),
          :error <- get_changing_value(changeset, field),
-         :error <- get_casted_value(changeset, field),
-         :error <- get_non_attribute_non_argument_param(changeset, form, field),
-         :error <- get_data_value(changeset.data, field) do
+         :error <- get_param_or_data(changeset, form, field) do
       nil
     else
       {:ok, %Ash.NotLoaded{}} ->
@@ -3299,8 +3368,7 @@ defmodule AshPhoenix.Form do
   defp do_value(%{source: %Ash.Query{} = query, data: data} = form, field) do
     with :error <- get_nested(form, field),
          :error <- Ash.Query.fetch_argument(query, field),
-         :error <- Map.fetch(query.params, to_string(field)),
-         :error <- Map.fetch(data || %{}, field) do
+         :error <- get_query_param_or_data(query, data, form, field) do
       nil
     else
       {:ok, %Ash.NotLoaded{}} ->
@@ -3314,8 +3382,7 @@ defmodule AshPhoenix.Form do
   defp do_value(%{source: %Ash.ActionInput{} = action_input, data: data} = form, field) do
     with :error <- get_nested(form, field),
          :error <- Ash.ActionInput.fetch_argument(action_input, field),
-         :error <- Map.fetch(action_input.params, to_string(field)),
-         :error <- Map.fetch(data || %{}, field) do
+         :error <- get_action_input_param_or_data(action_input, data, form, field) do
       nil
     else
       {:ok, %Ash.NotLoaded{}} ->
@@ -6415,6 +6482,7 @@ defmodule AshPhoenix.Form do
       :forms,
       :transform_errors,
       :post_process_errors,
+      :prioritize_data_for,
       :params,
       :errors,
       :id,
