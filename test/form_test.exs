@@ -16,6 +16,7 @@ defmodule AshPhoenix.FormTest do
     Domain,
     Post,
     PostWithDefault,
+    PricingEstimate,
     TaskAction,
     TodoTask,
     TodoTaskContext
@@ -2838,5 +2839,38 @@ defmodule AshPhoenix.FormTest do
     [comment_form] = form.forms[:comments]
     assert comment_form.source.context[:shared] == %{shared_key: "shared_value"}
     refute comment_form.source.context[:some_other_key]
+  end
+
+  describe "prioritize_data_for option" do
+    test "computed attribute shows correct data value with prioritize_data_for option" do
+      # Create estimate with original values
+      estimate =
+        PricingEstimate
+        |> Ash.Changeset.for_create(:create, %{
+          original_price: 100,
+          discount_price: 10,
+          final_price: 90
+        })
+        |> Ash.create!()
+
+      # Simulate web form submission where:
+      # 1. User changed discount_price from 10 to 1 (final_price became 99)
+      # 2. User changed discount_price back to 10
+      # 3. Browser sends all params including stale final_price=99
+      form =
+        estimate
+        |> Form.for_update(:update,
+          domain: Domain,
+          prioritize_data_for: [:final_price]
+        )
+        |> Form.validate(%{
+          "original_price" => "100",
+          "discount_price" => "10",
+          "final_price" => "99"  # Stale value from previous calculation
+        })
+
+      # Should show correct data value (90) instead of stale param value (99)
+      assert Form.value(form, :final_price) == 90
+    end
   end
 end
